@@ -7,7 +7,7 @@ static const uint8_t maxChannel = 83; // E220 supports channels 0-83
 //==============================================================================
 // Constructor
 //==============================================================================
-EE220::EBYTE_E220(Stream *s, uint8_t pinM0, uint8_t pinM1, uint8_t pinAux)
+EE220::EE220(Stream *s, uint8_t pinM0, uint8_t pinM1, uint8_t pinAux)
     : _serial(s), _pinM0(pinM0), _pinM1(pinM1), _pinAux(pinAux), _save(0), _addressHigh(0), _addressLow(0), _reg0(0), _reg1(0), _channel(0), _reg3(0), _cryptHigh(0), _cryptLow(0), _uartBaudRate(UART_9600), _parityBit(PARITY_8N1), _airDataRate(AIR_2400), _subPacketSize(PKT_200_BYTES), _rssiAmbientNoiseEnable(false), _transmitPower(POWER_22dB), _rssiByteEnable(false), _transmissionMode(MODE_FIXED_DISABLE), _lbtEnable(false), _worTiming(WOR_500), _lastMode(MODE_NOT_SET), _lastError(ErrorCode::OK), _debugPrint(false), _lastRSSI(0), _lastReceiveRSSI(0), _newRSSIAvailable(false), _pinRecoverTime(PIN_RECOVER_DEFAULT), _auxTimeout(AUX_TIMEOUT_DEFAULT)
 {
 }
