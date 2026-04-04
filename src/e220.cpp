@@ -1,608 +1,277 @@
-#include "e220.h"
+#include "E220.h"
+#include <Arduino.h>
 
-// Lookup tables
-static const uint32_t baudRateTable[] = {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200};
-static const uint8_t maxChannel = 83; // E220 supports channels 0-83
-
-//==============================================================================
-// Constructor
-//==============================================================================
-EE220::EE220(Stream *s, uint8_t pinM0, uint8_t pinM1, uint8_t pinAux)
-    : _serial(s), _pinM0(pinM0), _pinM1(pinM1), _pinAux(pinAux), _save(0), _addressHigh(0), _addressLow(0), _reg0(0), _reg1(0), _channel(0), _reg3(0), _cryptHigh(0), _cryptLow(0), _uartBaudRate(UART_9600), _parityBit(PARITY_8N1), _airDataRate(AIR_2400), _subPacketSize(PKT_200_BYTES), _rssiAmbientNoiseEnable(false), _transmitPower(POWER_22dB), _rssiByteEnable(false), _transmissionMode(MODE_FIXED_DISABLE), _lbtEnable(false), _worTiming(WOR_500), _lastMode(MODE_NOT_SET), _lastError(ErrorCode::OK), _debugPrint(false), _lastRSSI(0), _lastReceiveRSSI(0), _newRSSIAvailable(false), _pinRecoverTime(PIN_RECOVER_DEFAULT), _auxTimeout(AUX_TIMEOUT_DEFAULT)
+E220::E220(uint8_t m0Pin, uint8_t m1Pin, uint8_t auxPin, uint8_t rxPin, uint8_t txPin)
 {
+    _m0Pin = m0Pin;
+    _m1Pin = m1Pin;
+    _auxPin = auxPin;
+    _serial = new SoftwareSerial(rxPin, txPin);
+    _currentMode = MODE_NORMAL;
+    _lastRSSI = 0;
 }
 
-//==============================================================================
-// Initialization
-//==============================================================================
-bool EE220::init(uint32_t baudRate)
+bool E220::begin(uint32_t baudRate)
 {
-    // Configure pins
-    pinMode(_pinAux, INPUT_PULLUP);
-    pinMode(_pinM0, OUTPUT);
-    pinMode(_pinM1, OUTPUT);
+    pinMode(_m0Pin, OUTPUT);
+    pinMode(_m1Pin, OUTPUT);
+    pinMode(_auxPin, INPUT_PULLUP);
 
-    // Set to normal mode
+    _serial->begin(baudRate);
+
+    // Сброс в нормальный режим
     setMode(MODE_NORMAL);
-    delay(_pinRecoverTime);
+    delay(100);
 
-    // Read parameters
-    bool success = readParameters();
-    if (!success)
+    // Ждём готовности модуля
+    for (int i = 0; i < 50; i++)
     {
-        _lastError = ErrorCode::COMMUNICATION_FAILED;
-        return false;
-    }
-
-    _lastError = ErrorCode::OK;
-    return true;
-}
-
-//==============================================================================
-// Mode control
-//==============================================================================
-void EE220::setMode(MODE_TYPE mode)
-{
-    // Small delay before changing mode
-    delayMicrosecondsSafe(100);
-
-    switch (mode)
-    {
-    case MODE_NORMAL:
-        digitalWrite(_pinM0, LOW);
-        digitalWrite(_pinM1, LOW);
-        break;
-
-    case MODE_WOR_TRANSMIT:
-        digitalWrite(_pinM0, HIGH);
-        digitalWrite(_pinM1, LOW);
-        break;
-
-    case MODE_WOR_RECEIVE:
-        digitalWrite(_pinM0, LOW);
-        digitalWrite(_pinM1, HIGH);
-        break;
-
-    case MODE_PROGRAM:
-    case MODE_DEEP_SLEEP:
-        // Оба режима используют одинаковые настройки пинов
-        digitalWrite(_pinM0, HIGH);
-        digitalWrite(_pinM1, HIGH);
-        break;
-
-    default:
-        return;
-    }
-
-    // Wait for mode to stabilize
-    delayMicrosecondsSafe(_pinRecoverTime);
-
-    // Clear buffer to avoid corruption
-    clearBuffer();
-
-    // Wait for AUX to be ready
-    waitForAux(_auxTimeout);
-
-    _lastMode = mode;
-}
-
-bool EE220::isAuxHigh()
-{
-    return digitalRead(_pinAux) == HIGH;
-}
-
-//==============================================================================
-// Data transmission
-//==============================================================================
-bool EE220::sendByte(uint8_t data)
-{
-    _serial->write(data);
-    return waitForAux(_auxTimeout);
-}
-
-int EE220::receiveByte()
-{
-    if (_serial->available())
-    {
-        return _serial->read();
-    }
-    return -1;
-}
-
-bool EE220::sendStruct(const void *structure, uint16_t size)
-{
-    if (!structure || size == 0)
-    {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return false;
-    }
-
-    // Debug output
-    if (_debugPrint)
-    {
-        Serial.print(F("["));
-        Serial.print(size);
-        Serial.print(F("] "));
-
-        const uint8_t *bytes = (const uint8_t *)structure;
-        for (uint16_t i = 0; i < size; i++)
+        if (isReady())
         {
-            if (bytes[i] < 0x10)
-                Serial.print(F("0"));
-            Serial.print(bytes[i], HEX);
-            Serial.print(F(" "));
+            return true;
         }
-        Serial.println();
+        delay(50);
     }
-
-    // Send data
-    size_t written = _serial->write((const uint8_t *)structure, size);
-
-    // Wait for transmission to complete
-    bool success = waitForAux(_auxTimeout);
-
-    if (written != size)
-    {
-        _lastError = ErrorCode::BUFFER_OVERFLOW;
-        return false;
-    }
-
-    _lastError = ErrorCode::OK;
-    return success;
+    return false;
 }
 
-bool EE220::receiveStruct(void *structure, uint16_t size)
+void E220::setModePins(E220Mode mode)
 {
-    if (!structure || size == 0)
+    digitalWrite(_m0Pin, (mode & 0x01) ? HIGH : LOW);
+    digitalWrite(_m1Pin, (mode & 0x02) ? HIGH : LOW);
+}
+
+void E220::setMode(E220Mode mode)
+{
+    if (_currentMode == mode)
+        return;
+
+    setModePins(mode);
+    delay(20); // Время на переключение режима
+
+    // Если выходим из конфигурационного режима, нужно больше времени
+    if (_currentMode == MODE_CONFIG)
     {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return false;
+        waitForAUX();
     }
 
-    _newRSSIAvailable = false;
+    _currentMode = mode;
+}
 
-    // Read data
-    size_t read = _serial->readBytes((uint8_t *)structure, size);
+E220Mode E220::getMode()
+{
+    return _currentMode;
+}
 
-    // Check for RSSI byte if enabled
-    if (_rssiByteEnable)
+bool E220::isReady()
+{
+    return digitalRead(_auxPin) == HIGH;
+}
+
+void E220::waitForAUX()
+{
+    unsigned long start = millis();
+    while (digitalRead(_auxPin) == LOW)
     {
-        uint32_t startTime = millis();
-        while ((millis() - startTime) < 5)
+        if (millis() - start > 2000)
         {
-            if (_serial->available())
-            {
-                _lastRSSI = _serial->read();
-                _newRSSIAvailable = true;
-                RSSIdata = _lastRSSI;
-                newRSSIdataAvailable = true;
-                break;
-            }
+            break; // Таймаут 2 секунды
         }
-    }
-
-    waitForAux(_auxTimeout);
-
-    if (read != size)
-    {
-        _lastError = ErrorCode::COMMUNICATION_FAILED;
-        return false;
-    }
-
-    _lastError = ErrorCode::OK;
-    return true;
-}
-
-void EE220::enableDebugPrint(bool enable)
-{
-    _debugPrint = enable;
-}
-
-//==============================================================================
-// RSSI functions
-//==============================================================================
-bool EE220::getRSSIValues()
-{
-    if (!_rssiAmbientNoiseEnable)
-    {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return false;
-    }
-
-    if (_lastMode != MODE_NORMAL && _lastMode != MODE_WOR_TRANSMIT)
-    {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return false;
-    }
-
-    uint8_t command[] = {0xC0, 0xC1, 0xC2, 0xC3, 0x00, 0x02};
-
-    if (!sendStruct(command, sizeof(command)))
-    {
-        return false;
-    }
-
-    delay(50);
-
-    uint8_t response[5];
-    if (_serial->readBytes(response, 5) != 5)
-    {
-        _lastError = ErrorCode::COMMUNICATION_FAILED;
-        return false;
-    }
-
-    _lastRSSI = response[3];
-    _lastReceiveRSSI = response[4];
-    RSSIdata = _lastRSSI;
-    RSSIlastReceive = _lastReceiveRSSI;
-
-    waitForAux(4000);
-
-    _lastError = ErrorCode::OK;
-    return true;
-}
-
-int16_t EE220::calculateRSSIInDBm(uint8_t rssiData)
-{
-    return -(256 - (int16_t)rssiData);
-}
-
-//==============================================================================
-// Parameter setters
-//==============================================================================
-void EE220::setAddress(uint16_t address)
-{
-    _addressHigh = (address >> 8) & 0xFF;
-    _addressLow = address & 0xFF;
-}
-
-void EE220::setAddressHigh(uint8_t value)
-{
-    _addressHigh = value;
-}
-
-void EE220::setAddressLow(uint8_t value)
-{
-    _addressLow = value;
-}
-
-void EE220::setChannel(uint8_t channel)
-{
-    if (channel > maxChannel)
-    {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return;
-    }
-    _channel = channel;
-    _lastError = ErrorCode::OK;
-}
-
-void EE220::setUARTBaudRate(uint8_t rate)
-{
-    if (rate > 7)
-    {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return;
-    }
-    _uartBaudRate = rate;
-    buildREG0();
-    _lastError = ErrorCode::OK;
-}
-
-void EE220::setParityBit(uint8_t parity)
-{
-    if (parity > 2)
-    {
-        _lastError = ErrorCode::INVALID_PARAM;
-        return;
-    }
-    _parityBit = parity;
-    buildREG0();
-    _lastError = ErrorCode::OK;
-}
-
-void EE220::setAirDataRate(uint8_t rate)
-{
-    _airDataRate = rate;
-    buildREG0();
-}
-
-void EE220::setSubPacketSize(uint8_t size)
-{
-    _subPacketSize = size;
-    buildREG1();
-}
-
-void EE220::setRSSIAmbientNoiseEnable(bool enable)
-{
-    _rssiAmbientNoiseEnable = enable;
-    buildREG1();
-}
-
-void EE220::setTransmitPower(uint8_t power)
-{
-    _transmitPower = power;
-    buildREG1();
-}
-
-void EE220::setRSSIByteEnable(bool enable)
-{
-    _rssiByteEnable = enable;
-    buildREG3();
-}
-
-void EE220::setTransmissionMode(uint8_t mode)
-{
-    _transmissionMode = mode;
-    buildREG3();
-}
-
-void EE220::setLBTEnable(bool enable)
-{
-    _lbtEnable = enable;
-    buildREG3();
-}
-
-void EE220::setWORTiming(uint8_t timing)
-{
-    _worTiming = timing;
-    buildREG3();
-}
-
-void EE220::setCrypt(uint16_t value)
-{
-    _cryptHigh = (value >> 8) & 0xFF;
-    _cryptLow = value & 0xFF;
-
-    setMode(MODE_PROGRAM);
-    delay(5);
-
-    _serial->write(CMD_WRITE_SAVE);
-    _serial->write(0x06); // Starting address for crypt
-    _serial->write(0x02); // Length
-    _serial->write(_cryptHigh);
-    _serial->write(_cryptLow);
-
-    delay(50);
-    _serial->readBytes((uint8_t *)&_cryptHigh, 5);
-
-    waitForAux(4000);
-    setMode(MODE_NORMAL);
-}
-
-void EE220::setDefaultParameters()
-{
-    setAddress(0);
-    setUARTBaudRate(UART_9600);
-    setParityBit(PARITY_8N1);
-    setAirDataRate(AIR_2400);
-    setSubPacketSize(PKT_200_BYTES);
-    setRSSIAmbientNoiseEnable(false);
-    setTransmitPower(POWER_22dB);
-    setChannel(15);
-    setRSSIByteEnable(false);
-    setTransmissionMode(MODE_FIXED_DISABLE);
-    setLBTEnable(false);
-    setWORTiming(WOR_500);
-    setCrypt(0);
-    saveParameters(CMD_WRITE_SAVE);
-}
-
-//==============================================================================
-// Parameter getters
-//==============================================================================
-uint16_t EE220::getAddress()
-{
-    return (_addressHigh << 8) | _addressLow;
-}
-
-//==============================================================================
-// Save parameters
-//==============================================================================
-bool EE220::saveParameters(PROGRAM_COMMAND_TYPE command)
-{
-    Configuration config;
-    config.command = command;
-    config.startAddress = 0;
-    config.length = 6;
-    config.addH = _addressHigh;
-    config.addL = _addressLow;
-    config.reg0 = _reg0;
-    config.reg1 = _reg1;
-    config.channel = _channel;
-    config.reg3 = _reg3;
-
-    setMode(MODE_PROGRAM);
-    delay(5);
-
-    if (!sendStruct(&config, sizeof(config)))
-    {
-        _lastError = ErrorCode::COMMUNICATION_FAILED;
-        setMode(MODE_NORMAL);
-        return false;
-    }
-
-    // Wait for response
-    uint32_t startTime = millis();
-    while (_serial->available() == 0 && (millis() - startTime) < 5000)
-    {
         delay(1);
     }
+}
 
-    if (!receiveStruct(&config, sizeof(config)))
+bool E220::sendData(const uint8_t *data, size_t len)
+{
+    if (_currentMode != MODE_NORMAL && _currentMode != MODE_WOR_TX)
     {
-        _lastError = ErrorCode::COMMUNICATION_FAILED;
         setMode(MODE_NORMAL);
-        return false;
+        waitForAUX();
     }
 
-    waitForAux(4000);
-    setMode(MODE_NORMAL);
+    waitForAUX();
 
-    _lastError = ErrorCode::OK;
-    return true;
-}
-
-//==============================================================================
-// Utility functions
-//==============================================================================
-bool EE220::available()
-{
-    return _serial->available() > 0;
-}
-
-void EE220::flush()
-{
+    size_t sent = _serial->write(data, len);
     _serial->flush();
+
+    // Ждём завершения передачи
+    waitForAUX();
+
+    return sent == len;
 }
 
-void EE220::printParameters()
+bool E220::sendString(const String &message)
 {
-    Serial.println(F("----------------------------------------"));
-    Serial.print(F("Address High: 0x"));
-    Serial.println(_addressHigh, HEX);
-    Serial.print(F("Address Low:  0x"));
-    Serial.println(_addressLow, HEX);
-    Serial.print(F("Channel:      "));
-    Serial.println(_channel);
-    Serial.print(F("REG0:         0x"));
-    Serial.println(_reg0, HEX);
-    Serial.print(F("REG1:         0x"));
-    Serial.println(_reg1, HEX);
-    Serial.print(F("REG3:         0x"));
-    Serial.println(_reg3, HEX);
-    Serial.print(F("UART Baud:    "));
-    Serial.println(baudRateTable[_uartBaudRate]);
-    Serial.print(F("Air Data Rate:"));
-    Serial.println(_airDataRate);
-    Serial.print(F("Transmit Power:"));
-    Serial.println(_transmitPower);
-    Serial.println(F("----------------------------------------"));
+    return sendData((const uint8_t *)message.c_str(), message.length());
 }
 
-//==============================================================================
-// Private methods
-//==============================================================================
-bool EE220::readParameters()
+int E220::available()
 {
-    Configuration config;
-    config.command = CMD_READ_CONFIG;
-    config.startAddress = 0;
-    config.length = 6;
-
-    setMode(MODE_PROGRAM);
-
-    if (!sendStruct(&config, 3))
+    if (_currentMode != MODE_NORMAL && _currentMode != MODE_WOR_RX)
     {
-        setMode(MODE_NORMAL);
-        return false;
+        return 0;
+    }
+    return _serial->available();
+}
+
+size_t E220::receiveData(uint8_t *buffer, size_t maxLen)
+{
+    size_t received = 0;
+    unsigned long start = millis();
+
+    while (received < maxLen && (millis() - start) < 100)
+    {
+        if (_serial->available())
+        {
+            buffer[received++] = _serial->read();
+            start = millis();
+        }
     }
 
-    delay(50);
+    return received;
+}
 
-    if (_serial->readBytes((uint8_t *)&config, sizeof(config)) != sizeof(config))
+String E220::receiveString()
+{
+    String result = "";
+    unsigned long start = millis();
+
+    while ((millis() - start) < 100)
     {
-        setMode(MODE_NORMAL);
-        return false;
+        if (_serial->available())
+        {
+            result += (char)_serial->read();
+            start = millis();
+        }
     }
 
-    _save = config.command;
-    _addressHigh = config.addH;
-    _addressLow = config.addL;
-    _reg0 = config.reg0;
-    _reg1 = config.reg1;
-    _channel = config.channel;
-    _reg3 = config.reg3;
-
-    // Parse registers
-    _uartBaudRate = (_reg0 & 0b11100000) >> 5;
-    _parityBit = (_reg0 & 0b00011000) >> 3;
-    _airDataRate = (_reg0 & 0b00000111);
-
-    _subPacketSize = (_reg1 & 0b11000000) >> 6;
-    _rssiAmbientNoiseEnable = (_reg1 & 0b00100000) >> 5;
-    _transmitPower = (_reg1 & 0b00000011);
-
-    _rssiByteEnable = (_reg3 & 0b10000000) >> 7;
-    _transmissionMode = (_reg3 & 0b01000000) >> 6;
-    _lbtEnable = (_reg3 & 0b00010000) >> 4;
-    _worTiming = (_reg3 & 0b00000111);
-
-    setMode(MODE_NORMAL);
-
-    return _save == CMD_RETURNED;
+    return result;
 }
 
-void EE220::buildREG0()
+int8_t E220::getLastRSSI()
 {
-    _reg0 = ((_uartBaudRate & 0b111) << 5) |
-            ((_parityBit & 0b11) << 3) |
-            (_airDataRate & 0b111);
+    return _lastRSSI;
 }
 
-void EE220::buildREG1()
+uint8_t E220::calculateCRC(const uint8_t *data, uint8_t len)
 {
-    _reg1 = ((_subPacketSize & 0b11) << 6) |
-            ((_rssiAmbientNoiseEnable ? 1 : 0) << 5) |
-            (_transmitPower & 0b11);
+    uint8_t crc = 0;
+    for (uint8_t i = 0; i < len; i++)
+    {
+        crc ^= data[i];
+    }
+    return crc;
 }
 
-void EE220::buildREG3()
+bool E220::sendCommand(const uint8_t *cmd, uint8_t cmdLen, uint8_t *response, uint8_t respLen)
 {
-    _reg3 = ((_rssiByteEnable ? 1 : 0) << 7) |
-            ((_transmissionMode & 0b1) << 6) |
-            ((_lbtEnable ? 1 : 0) << 4) |
-            (_worTiming & 0b111);
-}
+    E220Mode previousMode = _currentMode;
 
-void EE220::clearBuffer()
-{
-    uint32_t startTime = millis();
+    // Переключаемся в режим конфигурации
+    if (_currentMode != MODE_CONFIG)
+    {
+        setMode(MODE_CONFIG);
+        waitForAUX();
+    }
+
+    // Очищаем буфер
     while (_serial->available())
     {
         _serial->read();
-        if (millis() - startTime > 500)
+    }
+
+    // Отправляем команду
+    _serial->write(cmd, cmdLen);
+    _serial->flush();
+
+    // Ждём ответ
+    delay(50);
+
+    // Читаем ответ
+    uint8_t received = 0;
+    unsigned long start = millis();
+
+    while (received < respLen && (millis() - start) < 500)
+    {
+        if (_serial->available())
         {
-            if (_debugPrint)
-            {
-                Serial.println(F("ClearBuffer timeout"));
-            }
-            break;
+            response[received++] = _serial->read();
         }
     }
+
+    // Возвращаемся в предыдущий режим
+    if (previousMode != MODE_CONFIG)
+    {
+        setMode(previousMode);
+    }
+
+    return received == respLen && response[0] == 0xC1;
 }
 
-bool EE220::waitForAux(uint32_t timeoutMs)
+bool E220::configure(const E220Config &config)
 {
-    if (_pinAux == 255)
-    { // AUX not connected
-        delay(COMPLETE_TASK_DELAY);
-        return true;
-    }
+    // Команда: C0 + начальный адрес(00) + длина(09) + параметры
+    uint8_t cmd[13] = {
+        0xC0, 0x00, 0x09,                                           // Заголовок команды
+        (uint8_t)(config.address >> 8),                             // ADDH
+        (uint8_t)(config.address & 0xFF),                           // ADDL
+        config.channel,                                             // CHAN
+        (uint8_t)((config.uartBaud << 2) | (0 << 1) | 0),           // SPED (UART)
+        (uint8_t)((config.airRate << 5) | (config.power << 2) | 0), // OPTION
+        (uint8_t)((config.fixedTransmission ? 0x01 : 0x00) |
+                  (config.enableRSSI ? 0x02 : 0x00) |
+                  (config.enableLBT ? 0x10 : 0x00)), // TRANSMISSION_MODE
+        0x00, 0x00, 0x00, 0x00                       // Криптография (не используется)
+    };
 
-    uint32_t startTime = millis();
-    while (digitalRead(_pinAux) == LOW)
+    uint8_t response[13];
+    return sendCommand(cmd, 13, response, 13);
+}
+
+bool E220::getConfig(E220Config &config)
+{
+    uint8_t cmd[] = {0xC1, 0x00, 0x09};
+    uint8_t response[13];
+
+    if (!sendCommand(cmd, 3, response, 13))
     {
-        if (millis() - startTime > timeoutMs)
-        {
-            _lastError = ErrorCode::TIMEOUT;
-            return false;
-        }
-        delay(1);
+        return false;
     }
 
-    delay(COMPLETE_TASK_DELAY);
+    config.address = (response[4] << 8) | response[5];
+    config.channel = response[6];
+    config.uartBaud = (UARTBaudRate)((response[7] >> 2) & 0x07);
+    config.airRate = (AirDataRate)((response[8] >> 5) & 0x07);
+    config.power = (TransmitPower)((response[8] >> 2) & 0x03);
+    config.fixedTransmission = (response[9] & 0x01) != 0;
+    config.enableRSSI = (response[9] & 0x02) != 0;
+    config.enableLBT = (response[9] & 0x10) != 0;
+
     return true;
 }
 
-void EE220::delayMicrosecondsSafe(uint32_t us)
+void E220::reset()
 {
-    if (us < 20000)
+    setMode(MODE_CONFIG);
+    waitForAUX();
+
+    uint8_t cmd[] = {0xC4, 0x00, 0x01}; // Команда сброса
+    _serial->write(cmd, 3);
+    _serial->flush();
+
+    delay(200);
+    setMode(MODE_NORMAL);
+}
+
+uint32_t E220::getVersion()
+{
+    uint8_t cmd[] = {0xC3, 0x00, 0x01};
+    uint8_t response[6];
+
+    if (!sendCommand(cmd, 3, response, 6))
     {
-        delayMicroseconds(us);
+        return 0;
     }
-    else
-    {
-        delay(us / 1000);
-    }
+
+    return (response[4] << 8) | response[5];
 }
