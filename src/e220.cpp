@@ -65,6 +65,7 @@ void EE220::setMode(MODE_TYPE mode)
 
     case MODE_PROGRAM:
     case MODE_DEEP_SLEEP:
+        // Оба режима используют одинаковые настройки пинов
         digitalWrite(_pinM0, HIGH);
         digitalWrite(_pinM1, HIGH);
         break;

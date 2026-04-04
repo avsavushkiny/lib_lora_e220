@@ -16,7 +16,7 @@ enum MODE_TYPE : uint8_t
     MODE_WOR_TRANSMIT = 1,
     MODE_WOR_RECEIVE = 2,
     MODE_PROGRAM = 3,
-    MODE_DEEP_SLEEP = 3,
+    MODE_DEEP_SLEEP = 4,
     MODE_NOT_SET = 0xFF
 };
 
