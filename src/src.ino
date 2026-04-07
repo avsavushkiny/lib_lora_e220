@@ -68,8 +68,8 @@ void loop()
         Serial.print("Получено: ");
         Serial.println(msg);
 
-        // Отправляем ответ
-        lora.sendString("OK: " + msg);
+        // // Отправляем ответ
+        // lora.sendString(msg);
     }
 
     // Отправляем данные по Serial
