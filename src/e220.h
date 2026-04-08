@@ -80,6 +80,7 @@ public:
     // Отправка данных
     bool sendData(const uint8_t *data, size_t len);
     bool sendString(const String &message);
+    bool sendStringWithAddress(const String &message, uint16_t destAddress, uint8_t destChannel);
 
     // Приём данных
     int available();

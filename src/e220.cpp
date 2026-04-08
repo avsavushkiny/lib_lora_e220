@@ -105,6 +105,24 @@ bool E220::sendString(const String &message)
     return sendData((const uint8_t *)message.c_str(), message.length());
 }
 
+bool E220::sendStringWithAddress(const String &message, uint16_t destAddress, uint8_t destChannel)
+{
+    // Формируем префикс: [DD DD CC] где DD - адрес (2 байта), CC - канал (1 байт)
+    uint8_t prefix[3];
+    prefix[0] = (destAddress >> 8) & 0xFF;  // Старший байт адреса
+    prefix[1] = destAddress & 0xFF;         // Младший байт адреса
+    prefix[2] = destChannel;                // Канал
+
+    // Отправляем префикс
+    if (!sendData(prefix, 3)) {
+        return false;
+    }
+    
+    // Отправляем сообщение SAY
+    String sayMessage = "SAY " + message;
+    return sendString(sayMessage);
+}
+
 int E220::available()
 {
     if (_currentMode != MODE_NORMAL && _currentMode != MODE_WOR_RX)

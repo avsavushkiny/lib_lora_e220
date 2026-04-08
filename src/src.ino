@@ -19,6 +19,10 @@ E220 lora(PIN_M0, PIN_M1, PIN_AUX, PIN_RX, PIN_TX);
 
 E220Config config;
 
+// Для таймера
+unsigned long previousTime = 0;
+const long interval = 10000; // 10
+
 void setup()
 {
     Serial.begin(115200);
@@ -42,8 +46,8 @@ void setup()
     }
 
     // Настраиваем модуль (опционально)
-    config.address = 0x1234;
-    config.channel = 23;
+    config.address = 0x1234; // Адрес
+    config.channel = 23;     // Канал
     config.uartBaud = BAUD_9600;
     config.airRate = AIR_2_4K;
     config.power = POWER_22dBm;
@@ -61,11 +65,19 @@ void setup()
 
 void loop()
 {
+    // Отправляем SAY HELLO каждые 10 секунд
+    unsigned long currentTime = millis();
+
+    if (currentTime - previousTime >= interval) {
+        sendSayHello();
+        previousTime = currentTime;
+    }
+    
     // Проверяем полученные данные
     if (lora.available())
     {
         String msg = lora.receiveString();
-        Serial.print("Получено: ");
+        Serial.println("RECEIVED");
         Serial.println(msg);
 
         // // Отправляем ответ
@@ -78,11 +90,16 @@ void loop()
         String msg = Serial.readString();
         if (lora.sendString(msg))
         {
-            Serial.println("Отправлено!");
+            Serial.println("SEND");
         }
         else
         {
-            Serial.println("Ошибка отправки!");
+            Serial.println("ERROR");
         }
     }
+}
+
+bool sendSayHello()
+{
+    lora.sendStringWithAddress("Hello", 0x1234, 23);
 }
