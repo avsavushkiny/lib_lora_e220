@@ -26,7 +26,7 @@ const long interval = 10000; // 10
 // ---------- ROVER functions ----------
 
 unsigned long roverStartTime = 0;
-unsigned long moveDuration = 0; // Длительность движения в мс
+const unsigned long moveDuration = 1000; // Длительность движения в мс
 bool isMoving = false;
 
 const int in2 = 10; // m1
@@ -142,33 +142,18 @@ void loop()
     {
         String msg = lora.receiveString();
         Serial.print("R: ");
-        Serial.print(msg); 
+        Serial.println(msg);
 
-        msg.trim(); // Удаляем \n
+        // // Отправляем ответ
+        // lora.sendString(msg);
 
-        if (msg.length() > 0)
+        if (!isMoving) 
         {
-            char command = msg.charAt(0);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-            // ЭКСТРЕННАЯ ОСТАНОВКА
-            if (command == 'R') 
-            {
-                stopRover();
-                isMoving = false; // Сбрасываем флаг, отменяя текущий таймер
-            }
-            // если ровер стоит
-            else if (!isMoving) 
-            {
-                long seconds = msg.substring(1).toInt(); 
-                if (seconds <= 0) seconds = 0; // можно 1
-                
-                moveDuration = seconds * 1000; 
-
-                if (command == 'W') { forwardRover();  isMoving = true; roverStartTime = millis(); }
-                if (command == 'S') { backwardRover(); isMoving = true; roverStartTime = millis(); }
-                if (command == 'A') { leftRover();     isMoving = true; roverStartTime = millis(); }
-                if (command == 'D') { rightRover();    isMoving = true; roverStartTime = millis(); }
-            }
+            if (msg == "W\n") { forwardRover();  isMoving = true; roverStartTime = millis(); }
+            if (msg == "S\n") { backwardRover(); isMoving = true; roverStartTime = millis(); }
+            if (msg == "A\n") { leftRover();     isMoving = true; roverStartTime = millis(); }
+            if (msg == "D\n") { rightRover();    isMoving = true; roverStartTime = millis(); }
+            if (msg == "R\n") { stopRover();     isMoving = true; roverStartTime = millis(); }
         }
     }
 

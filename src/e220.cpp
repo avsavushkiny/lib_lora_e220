@@ -154,7 +154,7 @@ String E220::receiveString()
     String result = "";
     unsigned long start = millis();
 
-    while ((millis() - start) < 100)
+    while ((millis() - start) < 10) //100
     {
         if (_serial->available())
         {
