@@ -162,7 +162,7 @@ void loop()
                 long seconds = msg.substring(1).toInt(); 
                 if (seconds <= 0) seconds = 0; // можно 1
                 
-                moveDuration = seconds * 1000; 
+                moveDuration = seconds * 100; 
 
                 if (command == 'W') { forwardRover();  isMoving = true; roverStartTime = millis(); }
                 if (command == 'S') { backwardRover(); isMoving = true; roverStartTime = millis(); }
